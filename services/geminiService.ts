@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 
 // Ensure the API key is available from environment variables
@@ -35,13 +34,23 @@ export const translateWord = async (word: string): Promise<string> => {
               description: "The English translation of the word.",
             },
           },
-          required: ["translation"],
         },
       },
     });
 
-    // The response text should be a JSON string, but trim it just in case.
-    const jsonString = response.text.trim();
+    // FIX: The model may wrap the JSON response in markdown backticks or return an empty string.
+    // This makes parsing more robust by extracting JSON from a markdown code block if present
+    // and handling empty responses before attempting to parse.
+    let jsonString = response.text.trim();
+    const match = /```(?:json)?\s*([\s\S]*?)\s*```/.exec(jsonString);
+    if (match) {
+      jsonString = match[1];
+    }
+
+    if (!jsonString) {
+      return "Translation not found.";
+    }
+    
     const result = JSON.parse(jsonString);
     
     return result.translation || "Translation not found.";

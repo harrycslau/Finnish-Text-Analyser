@@ -1,6 +1,5 @@
-
-import React, { useState, useEffect, useCallback } from 'react';
-import { WordData, TooltipData } from './types';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { WordData, TooltipData, SentenceData } from './types';
 import { translateWord } from './services/geminiService';
 import Word from './components/Word';
 import Tooltip from './components/Tooltip';
@@ -9,15 +8,19 @@ import Spinner from './components/Spinner';
 
 const App: React.FC = () => {
   const [text, setText] = useState<string>('Tervetuloa! Kirjoita tai liitä suomenkielistä tekstiä tähän.');
-  const [words, setWords] = useState<WordData[]>([]);
+  const [sentences, setSentences] = useState<SentenceData[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
-  const [speakingWordIndex, setSpeakingWordIndex] = useState<number | null>(null);
+  const [speakingSentenceId, setSpeakingSentenceId] = useState<number | null>(null);
   const [speechRate, setSpeechRate] = useState<number>(1);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
   
   const [tooltip, setTooltip] = useState<TooltipData>(null);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
+
+  const currentSentenceIndexRef = useRef(0);
 
   // Stop speech synthesis on component unmount
   useEffect(() => {
@@ -25,6 +28,22 @@ const App: React.FC = () => {
       speechSynthesis.cancel();
     };
   }, []);
+
+  // Load available Finnish voices
+  useEffect(() => {
+    const loadVoices = () => {
+      const availableVoices = window.speechSynthesis.getVoices().filter(v => v.lang === 'fi-FI');
+      setVoices(availableVoices);
+      if (availableVoices.length > 0 && !selectedVoice) {
+        setSelectedVoice(availableVoices[0]);
+      }
+    };
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    loadVoices();
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, [selectedVoice]);
   
   // Close tooltip on outside click
   useEffect(() => {
@@ -40,20 +59,40 @@ const App: React.FC = () => {
 
   const handleAnalyse = () => {
     if (!text.trim()) return;
-    const newWords: WordData[] = [];
-    let idCounter = 0;
-    const wordRegex = /\S+/g;
-    let match;
 
-    while ((match = wordRegex.exec(text)) !== null) {
-      newWords.push({
-        id: idCounter++,
-        text: match[0],
-        charIndex: match.index,
-      });
-    }
+    const newSentences: SentenceData[] = [];
+    let sentenceIdCounter = 0;
+    let wordIdCounter = 0;
+    
+    // Split text into sentences. Regex tries to keep delimiters.
+    const sentenceRegex = /[^.!?]+[.!?]?/g;
+    const sentencesText = text.match(sentenceRegex) || [];
 
-    setWords(newWords);
+    sentencesText.forEach(sentenceText => {
+      const trimmedSentence = sentenceText.trim();
+      if (!trimmedSentence) return;
+
+      const sentenceWords: WordData[] = [];
+      const wordRegex = /\S+/g;
+      let match;
+
+      while ((match = wordRegex.exec(trimmedSentence)) !== null) {
+        sentenceWords.push({
+          id: wordIdCounter++,
+          text: match[0],
+        });
+      }
+      
+      if (sentenceWords.length > 0) {
+          newSentences.push({
+              id: sentenceIdCounter++,
+              text: trimmedSentence,
+              words: sentenceWords,
+          });
+      }
+    });
+
+    setSentences(newSentences);
     setIsAnalyzing(true);
   };
   
@@ -78,47 +117,98 @@ const App: React.FC = () => {
     }
   }, [isTranslating]);
 
+  const speakSentences = useCallback((startIndex: number = 0) => {
+    if (startIndex >= sentences.length) {
+      setIsSpeaking(false);
+      setSpeakingSentenceId(null);
+      return;
+    }
+
+    speechSynthesis.cancel(); // Cancel any previous speech
+    currentSentenceIndexRef.current = startIndex;
+    
+    const speakNext = () => {
+      const index = currentSentenceIndexRef.current;
+      if (index >= sentences.length) {
+        setIsSpeaking(false);
+        setSpeakingSentenceId(null);
+        return;
+      }
+
+      const sentence = sentences[index];
+      const utterance = new SpeechSynthesisUtterance(sentence.text);
+      utterance.lang = 'fi-FI';
+      utterance.rate = speechRate;
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+      }
+
+      utterance.onstart = () => {
+        setIsSpeaking(true);
+        setSpeakingSentenceId(sentence.id);
+      };
+
+      utterance.onend = () => {
+        currentSentenceIndexRef.current++;
+        speakNext();
+      };
+
+      utterance.onerror = (e) => {
+        console.error("Speech synthesis error:", e);
+        setIsSpeaking(false);
+        setSpeakingSentenceId(null);
+      };
+      
+      speechSynthesis.speak(utterance);
+    };
+
+    speakNext();
+  }, [sentences, speechRate, selectedVoice]);
 
   const handleReadAloud = () => {
     if (isSpeaking) {
       speechSynthesis.cancel();
       setIsSpeaking(false);
-      setSpeakingWordIndex(null);
-      return;
+      setSpeakingSentenceId(null);
+    } else {
+      speakSentences(0);
     }
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'fi-FI';
-    utterance.rate = speechRate;
-
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => {
-      setIsSpeaking(false);
-      setSpeakingWordIndex(null);
-    };
-    utterance.onerror = () => {
-      setIsSpeaking(false);
-      setSpeakingWordIndex(null);
-    };
-
-    utterance.onboundary = (event) => {
-        if (event.name === 'word') {
-             const word = words.find(w => w.charIndex === event.charIndex);
-             if (word) {
-                setSpeakingWordIndex(word.id);
-             }
-        }
-    };
-    
-    speechSynthesis.speak(utterance);
   };
+
+  const handleVoiceChange = (voiceName: string) => {
+    const voice = voices.find(v => v.name === voiceName);
+    if (voice) {
+      setSelectedVoice(voice);
+    }
+  };
+
+  const hasMounted = useRef(false);
+  const isSpeakingRef = useRef(isSpeaking);
+  isSpeakingRef.current = isSpeaking;
+  const speakingSentenceIdRef = useRef(speakingSentenceId);
+  speakingSentenceIdRef.current = speakingSentenceId;
+
+  useEffect(() => {
+    if (hasMounted.current && isSpeakingRef.current) {
+      const currentSentence = sentences.find(s => s.id === speakingSentenceIdRef.current);
+      const sentenceIndex = currentSentence ? sentences.indexOf(currentSentence) : 0;
+      if (sentenceIndex !== -1) {
+        speakSentences(sentenceIndex);
+      }
+    } else {
+      hasMounted.current = true;
+    }
+  // FIX: The dependency array was incomplete. Added `sentences` and `speakSentences` to
+  // ensure the effect doesn't use stale closures, which can lead to bugs. This may resolve
+  // the cascading type error that was reported.
+  }, [speechRate, selectedVoice, sentences, speakSentences]);
   
   const handleReset = () => {
     speechSynthesis.cancel();
     setIsAnalyzing(false);
-    setWords([]);
+    setSentences([]);
     setIsSpeaking(false);
-    setSpeakingWordIndex(null);
+    setSpeakingSentenceId(null);
     setTooltip(null);
   }
 
@@ -150,18 +240,33 @@ const App: React.FC = () => {
         speechRate={speechRate}
         onRateChange={setSpeechRate}
         onReset={handleReset}
+        voices={voices}
+        selectedVoice={selectedVoice}
+        onVoiceChange={handleVoiceChange}
       />
       <div className="w-full max-w-3xl bg-gray-800 p-6 sm:p-8 rounded-lg shadow-xl border border-gray-700">
         <p className="text-xl sm:text-2xl text-gray-200 leading-relaxed text-left">
-          {words.map((word) => (
-            <React.Fragment key={word.id}>
-              <Word
-                wordData={word}
-                isHighlighted={speakingWordIndex === word.id}
-                onClick={handleWordClick}
-              />{' '}
-            </React.Fragment>
-          ))}
+          {sentences.map((sentence) => {
+            const isSentenceHighlighted = speakingSentenceId === sentence.id;
+            return (
+              <span
+                key={sentence.id}
+                className={`transition-colors duration-300 ease-in-out ${isSentenceHighlighted ? 'bg-teal-500 text-white rounded' : ''}`}
+                // This padding gives the highlight its vertical size.
+                style={{ padding: isSentenceHighlighted ? '2px 0' : '0' }}
+              >
+                {sentence.words.map((word) => (
+                  <React.Fragment key={word.id}>
+                    <Word
+                      wordData={word}
+                      isHighlighted={isSentenceHighlighted}
+                      onClick={handleWordClick}
+                    />{' '}
+                  </React.Fragment>
+                ))}
+              </span>
+            );
+          })}
         </p>
       </div>
       {tooltip && isTranslating && tooltip.text === '...' && (

@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { WordData } from '../types';
 
@@ -9,15 +8,20 @@ interface WordProps {
 }
 
 const Word: React.FC<WordProps> = ({ wordData, isHighlighted, onClick }) => {
-  const baseClasses = "cursor-pointer inline-block transition-all duration-200 ease-in-out rounded";
-  const highlightedClasses = "bg-teal-500 text-white scale-110 shadow-lg";
-  const normalClasses = "hover:bg-gray-700";
+  // If the sentence is highlighted, the word has no special styling, just the cursor.
+  // Otherwise, it has a hover effect, its own rounded corners, and margin.
+  const baseClasses = "cursor-pointer inline-block transition-colors duration-200 ease-in-out";
+  const normalClasses = "hover:bg-gray-700 rounded";
 
   return (
     <span
-      className={`${baseClasses} ${isHighlighted ? highlightedClasses : normalClasses}`}
+      className={`${baseClasses} ${isHighlighted ? '' : normalClasses}`}
       onClick={(e) => onClick(wordData, e)}
-      style={{ padding: '2px 4px', margin: '0 2px' }}
+      // Padding provides a better click target; margin creates space only when not highlighted.
+      style={{
+        padding: isHighlighted ? '0 4px' : '2px 4px',
+        margin: isHighlighted ? '0' : '0 2px',
+      }}
     >
       {wordData.text}
     </span>
