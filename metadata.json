@@ -1,0 +1,5 @@
+{
+  "name": "Finnish Text Analyzer",
+  "description": "An interactive tool to analyze, translate, and listen to Finnish text. Click on words for instant English translations and use the text-to-speech feature with synchronized word highlighting.",
+  "requestFramePermissions": []
+}
