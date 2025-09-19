@@ -7,7 +7,7 @@ import Controls from './components/Controls';
 import Spinner from './components/Spinner';
 
 const App: React.FC = () => {
-  const [text, setText] = useState<string>('Tervetuloa! Kirjoita tai liitä suomenkielistä tekstiä tähän.');
+  const [text, setText] = useState<string>('');
   const [sentences, setSentences] = useState<SentenceData[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   
@@ -16,6 +16,7 @@ const App: React.FC = () => {
   const [speechRate, setSpeechRate] = useState<number>(1);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
+  const [voiceLoadState, setVoiceLoadState] = useState<'loading' | 'loaded' | 'unavailable'>('loading');
   
   const [tooltip, setTooltip] = useState<TooltipData>(null);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
@@ -29,21 +30,93 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Load available Finnish voices
+  // Load available Finnish voices (Android may require repeated polling)
   useEffect(() => {
-    const loadVoices = () => {
-      const availableVoices = window.speechSynthesis.getVoices().filter(v => v.lang === 'fi-FI');
-      setVoices(availableVoices);
-      if (availableVoices.length > 0 && !selectedVoice) {
-        setSelectedVoice(availableVoices[0]);
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      setVoiceLoadState('unavailable');
+      setVoices([]);
+      setSelectedVoice(null);
+      return;
+    }
+
+    let isActive = true;
+    let attempts = 0;
+    let intervalId: number | null = null;
+
+    setVoiceLoadState((prev) => (prev === 'loaded' ? prev : 'loading'));
+
+    const applyVoices = (finnishVoices: SpeechSynthesisVoice[]) => {
+      if (!isActive) return false;
+
+      setVoices(finnishVoices);
+
+      if (finnishVoices.length === 0) {
+        setSelectedVoice(null);
+        return false;
+      }
+
+      setVoiceLoadState('loaded');
+      setSelectedVoice((current) => {
+        if (current && finnishVoices.some((voice) => voice.name === current.name)) {
+          return current;
+        }
+        return finnishVoices[0];
+      });
+      return true;
+    };
+
+    const fetchVoices = () => {
+      const allVoices = window.speechSynthesis.getVoices();
+      const finnishVoices = allVoices.filter((voice) => (voice.lang || '').toLowerCase().startsWith('fi'));
+      return applyVoices(finnishVoices);
+    };
+
+    const handleVoiceChange = () => {
+      if (fetchVoices() && intervalId !== null) {
+        clearInterval(intervalId);
+        intervalId = null;
       }
     };
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-    loadVoices();
+
+    if (!fetchVoices()) {
+      intervalId = window.setInterval(() => {
+        attempts += 1;
+        if (fetchVoices() && intervalId !== null) {
+          clearInterval(intervalId);
+          intervalId = null;
+        } else if (attempts >= 10 && isActive) {
+          setVoiceLoadState('unavailable');
+          setVoices([]);
+          setSelectedVoice(null);
+          if (intervalId !== null) {
+            clearInterval(intervalId);
+            intervalId = null;
+          }
+        }
+      }, 500);
+    }
+
+    const synthesis = window.speechSynthesis;
+    const supportsAddEventListener = typeof synthesis.addEventListener === 'function';
+
+    if (supportsAddEventListener) {
+      synthesis.addEventListener('voiceschanged', handleVoiceChange);
+    } else {
+      synthesis.onvoiceschanged = handleVoiceChange;
+    }
+
     return () => {
-      window.speechSynthesis.onvoiceschanged = null;
+      isActive = false;
+      if (intervalId !== null) {
+        clearInterval(intervalId);
+      }
+      if (supportsAddEventListener) {
+        synthesis.removeEventListener('voiceschanged', handleVoiceChange);
+      } else if (synthesis.onvoiceschanged === handleVoiceChange) {
+        synthesis.onvoiceschanged = null;
+      }
     };
-  }, [selectedVoice]);
+  }, []);
   
   // Close tooltip on outside click
   useEffect(() => {
@@ -220,7 +293,7 @@ const App: React.FC = () => {
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Paste Finnish text here..."
+        placeholder="Tervetuloa! Kirjoita tai liitä suomenkielistä tekstiä tähän."
         className="w-full h-64 bg-gray-800 border border-gray-600 rounded-lg p-4 text-lg text-gray-200 focus:ring-2 focus:ring-teal-400 focus:border-teal-400 transition resize-none shadow-lg"
       />
       <button
@@ -243,6 +316,7 @@ const App: React.FC = () => {
         voices={voices}
         selectedVoice={selectedVoice}
         onVoiceChange={handleVoiceChange}
+        voiceLoadState={voiceLoadState}
       />
       <div className="w-full max-w-3xl bg-gray-800 p-6 sm:p-8 rounded-lg shadow-xl border border-gray-700">
         <p className="text-xl sm:text-2xl text-gray-200 leading-relaxed text-left">

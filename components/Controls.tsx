@@ -9,6 +9,7 @@ interface ControlsProps {
   voices: SpeechSynthesisVoice[];
   selectedVoice: SpeechSynthesisVoice | null;
   onVoiceChange: (voiceName: string) => void;
+  voiceLoadState: 'loading' | 'loaded' | 'unavailable';
 }
 
 const ReadAloudIcon: React.FC = () => (
@@ -33,7 +34,8 @@ const Controls: React.FC<ControlsProps> = ({
   onReset,
   voices,
   selectedVoice,
-  onVoiceChange
+  onVoiceChange,
+  voiceLoadState
 }) => {
   return (
     <div className="w-full max-w-3xl bg-gray-800/50 backdrop-blur-sm p-4 rounded-lg shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-4 z-10 border border-gray-700">
@@ -60,16 +62,20 @@ const Controls: React.FC<ControlsProps> = ({
                 value={selectedVoice ? selectedVoice.name : ''}
                 onChange={(e) => onVoiceChange(e.target.value)}
                 className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-teal-500 focus:border-teal-500 block w-full p-2"
-                disabled={voices.length === 0}
+                disabled={voiceLoadState !== 'loaded'}
             >
-                {voices.length > 0 ? (
-                voices.map((voice) => (
-                    <option key={voice.name} value={voice.name}>
+                {voiceLoadState === 'loaded' && voices.map((voice) => (
+                  <option key={voice.name} value={voice.name}>
                     {voice.name}
-                    </option>
-                ))
-                ) : (
-                <option value="">Loading voices...</option>
+                  </option>
+                ))}
+                {voiceLoadState === 'loading' && (
+                  <option value="">Loading voices...</option>
+                )}
+                {voiceLoadState === 'unavailable' && (
+                  <option value="" disabled>
+                    Finnish voices unavailable
+                  </option>
                 )}
             </select>
         </div>
