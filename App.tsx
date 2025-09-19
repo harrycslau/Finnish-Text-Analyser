@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { WordData, TooltipData, SentenceData } from './types';
+import { WordData, TooltipData, SentenceData, Voice } from './types';
 import { translateWord } from './services/geminiService';
+import { synthesizeSpeech, finnishVoices } from './services/ttsService';
 import Word from './components/Word';
 import Tooltip from './components/Tooltip';
 import Controls from './components/Controls';
@@ -14,106 +15,22 @@ const App: React.FC = () => {
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [speakingSentenceId, setSpeakingSentenceId] = useState<number | null>(null);
   const [speechRate, setSpeechRate] = useState<number>(1);
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
-  const [voiceLoadState, setVoiceLoadState] = useState<'loading' | 'loaded' | 'unavailable'>('loading');
+  const [voices] = useState<Voice[]>(finnishVoices);
+  const [selectedVoice, setSelectedVoice] = useState<Voice | null>(finnishVoices.length > 0 ? finnishVoices[0] : null);
   
   const [tooltip, setTooltip] = useState<TooltipData>(null);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
 
-  const currentSentenceIndexRef = useRef(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const isCancelledRef = useRef(false);
 
-  // Stop speech synthesis on component unmount
+  // Stop speech on component unmount
   useEffect(() => {
     return () => {
-      speechSynthesis.cancel();
-    };
-  }, []);
-
-  // Load available Finnish voices (Android may require repeated polling)
-  useEffect(() => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      setVoiceLoadState('unavailable');
-      setVoices([]);
-      setSelectedVoice(null);
-      return;
-    }
-
-    let isActive = true;
-    let attempts = 0;
-    let intervalId: number | null = null;
-
-    setVoiceLoadState((prev) => (prev === 'loaded' ? prev : 'loading'));
-
-    const applyVoices = (finnishVoices: SpeechSynthesisVoice[]) => {
-      if (!isActive) return false;
-
-      setVoices(finnishVoices);
-
-      if (finnishVoices.length === 0) {
-        setSelectedVoice(null);
-        return false;
-      }
-
-      setVoiceLoadState('loaded');
-      setSelectedVoice((current) => {
-        if (current && finnishVoices.some((voice) => voice.name === current.name)) {
-          return current;
-        }
-        return finnishVoices[0];
-      });
-      return true;
-    };
-
-    const fetchVoices = () => {
-      const allVoices = window.speechSynthesis.getVoices();
-      const finnishVoices = allVoices.filter((voice) => (voice.lang || '').toLowerCase().startsWith('fi'));
-      return applyVoices(finnishVoices);
-    };
-
-    const handleVoiceChange = () => {
-      if (fetchVoices() && intervalId !== null) {
-        clearInterval(intervalId);
-        intervalId = null;
-      }
-    };
-
-    if (!fetchVoices()) {
-      intervalId = window.setInterval(() => {
-        attempts += 1;
-        if (fetchVoices() && intervalId !== null) {
-          clearInterval(intervalId);
-          intervalId = null;
-        } else if (attempts >= 10 && isActive) {
-          setVoiceLoadState('unavailable');
-          setVoices([]);
-          setSelectedVoice(null);
-          if (intervalId !== null) {
-            clearInterval(intervalId);
-            intervalId = null;
-          }
-        }
-      }, 500);
-    }
-
-    const synthesis = window.speechSynthesis;
-    const supportsAddEventListener = typeof synthesis.addEventListener === 'function';
-
-    if (supportsAddEventListener) {
-      synthesis.addEventListener('voiceschanged', handleVoiceChange);
-    } else {
-      synthesis.onvoiceschanged = handleVoiceChange;
-    }
-
-    return () => {
-      isActive = false;
-      if (intervalId !== null) {
-        clearInterval(intervalId);
-      }
-      if (supportsAddEventListener) {
-        synthesis.removeEventListener('voiceschanged', handleVoiceChange);
-      } else if (synthesis.onvoiceschanged === handleVoiceChange) {
-        synthesis.onvoiceschanged = null;
+      isCancelledRef.current = true;
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
       }
     };
   }, []);
@@ -145,14 +62,17 @@ const App: React.FC = () => {
       const trimmedSentence = sentenceText.trim();
       if (!trimmedSentence) return;
 
+      // FIX: Replaced a complex `while` loop with `string.match()` and a `for...of` loop.
+      // This is more readable and fixes a TypeScript type inference issue where
+      // a variable was incorrectly inferred as `never`.
       const sentenceWords: WordData[] = [];
       const wordRegex = /\S+/g;
-      let match;
+      const words = trimmedSentence.match(wordRegex) || [];
 
-      while ((match = wordRegex.exec(trimmedSentence)) !== null) {
+      for (const word of words) {
         sentenceWords.push({
           id: wordIdCounter++,
-          text: match[0],
+          text: word,
         });
       }
       
@@ -190,57 +110,75 @@ const App: React.FC = () => {
     }
   }, [isTranslating]);
 
-  const speakSentences = useCallback((startIndex: number = 0) => {
-    if (startIndex >= sentences.length) {
-      setIsSpeaking(false);
-      setSpeakingSentenceId(null);
-      return;
-    }
+  const playAudio = (base64Audio: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+        if (isCancelledRef.current) {
+            return resolve();
+        }
+        const audioSrc = `data:audio/mp3;base64,${base64Audio}`;
+        const audio = new Audio(audioSrc);
+        audioRef.current = audio;
 
-    speechSynthesis.cancel(); // Cancel any previous speech
-    currentSentenceIndexRef.current = startIndex;
-    
-    const speakNext = () => {
-      const index = currentSentenceIndexRef.current;
-      if (index >= sentences.length) {
+        audio.onended = () => {
+            audioRef.current = null;
+            resolve();
+        };
+        audio.onerror = (e) => {
+            audioRef.current = null;
+            console.error("Audio playback error", e);
+            reject(new Error("Audio playback failed"));
+        };
+        
+        audio.play().catch(e => {
+            console.error("Error playing audio:", e);
+            reject(e);
+        });
+    });
+  };
+
+  const speakSentences = useCallback(async (startIndex: number = 0) => {
+    if (!selectedVoice || startIndex >= sentences.length) {
         setIsSpeaking(false);
         setSpeakingSentenceId(null);
         return;
-      }
+    }
 
-      const sentence = sentences[index];
-      const utterance = new SpeechSynthesisUtterance(sentence.text);
-      utterance.lang = 'fi-FI';
-      utterance.rate = speechRate;
-      if (selectedVoice) {
-        utterance.voice = selectedVoice;
-      }
+    isCancelledRef.current = false;
+    setIsSpeaking(true);
 
-      utterance.onstart = () => {
-        setIsSpeaking(true);
+    for (let i = startIndex; i < sentences.length; i++) {
+        if (isCancelledRef.current) {
+            break;
+        }
+
+        const sentence = sentences[i];
         setSpeakingSentenceId(sentence.id);
-      };
 
-      utterance.onend = () => {
-        currentSentenceIndexRef.current++;
-        speakNext();
-      };
+        try {
+            const audioContent = await synthesizeSpeech(sentence.text, selectedVoice.name, speechRate);
+            if (isCancelledRef.current) break;
+            await playAudio(audioContent);
+        } catch (error) {
+            console.error("Failed to speak sentence:", error);
+            // Optional: Show an error to the user
+            break; // Stop on error
+        }
+    }
 
-      utterance.onerror = (e) => {
-        console.error("Speech synthesis error:", e);
-        setIsSpeaking(false);
-        setSpeakingSentenceId(null);
-      };
-      
-      speechSynthesis.speak(utterance);
-    };
-
-    speakNext();
+    // Clean up after finishing or being cancelled
+    setIsSpeaking(false);
+    setSpeakingSentenceId(null);
+    audioRef.current = null;
   }, [sentences, speechRate, selectedVoice]);
 
   const handleReadAloud = () => {
     if (isSpeaking) {
-      speechSynthesis.cancel();
+      isCancelledRef.current = true;
+      if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.src = ''; // Stop download & release resources
+          audioRef.current = null;
+      }
       setIsSpeaking(false);
       setSpeakingSentenceId(null);
     } else {
@@ -254,30 +192,14 @@ const App: React.FC = () => {
       setSelectedVoice(voice);
     }
   };
-
-  const hasMounted = useRef(false);
-  const isSpeakingRef = useRef(isSpeaking);
-  isSpeakingRef.current = isSpeaking;
-  const speakingSentenceIdRef = useRef(speakingSentenceId);
-  speakingSentenceIdRef.current = speakingSentenceId;
-
-  useEffect(() => {
-    if (hasMounted.current && isSpeakingRef.current) {
-      const currentSentence = sentences.find(s => s.id === speakingSentenceIdRef.current);
-      const sentenceIndex = currentSentence ? sentences.indexOf(currentSentence) : 0;
-      if (sentenceIndex !== -1) {
-        speakSentences(sentenceIndex);
-      }
-    } else {
-      hasMounted.current = true;
-    }
-  // FIX: The dependency array was incomplete. Added `sentences` and `speakSentences` to
-  // ensure the effect doesn't use stale closures, which can lead to bugs. This may resolve
-  // the cascading type error that was reported.
-  }, [speechRate, selectedVoice, sentences, speakSentences]);
   
   const handleReset = () => {
-    speechSynthesis.cancel();
+    isCancelledRef.current = true;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current = null;
+    }
     setIsAnalyzing(false);
     setSentences([]);
     setIsSpeaking(false);
@@ -316,7 +238,6 @@ const App: React.FC = () => {
         voices={voices}
         selectedVoice={selectedVoice}
         onVoiceChange={handleVoiceChange}
-        voiceLoadState={voiceLoadState}
       />
       <div className="w-full max-w-3xl bg-gray-800 p-6 sm:p-8 rounded-lg shadow-xl border border-gray-700">
         <p className="text-xl sm:text-2xl text-gray-200 leading-relaxed text-left">

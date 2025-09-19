@@ -1,4 +1,5 @@
 import React from 'react';
+import { Voice } from '../types';
 
 interface ControlsProps {
   isSpeaking: boolean;
@@ -6,10 +7,9 @@ interface ControlsProps {
   speechRate: number;
   onRateChange: (rate: number) => void;
   onReset: () => void;
-  voices: SpeechSynthesisVoice[];
-  selectedVoice: SpeechSynthesisVoice | null;
+  voices: Voice[];
+  selectedVoice: Voice | null;
   onVoiceChange: (voiceName: string) => void;
-  voiceLoadState: 'loading' | 'loaded' | 'unavailable';
 }
 
 const ReadAloudIcon: React.FC = () => (
@@ -25,6 +25,13 @@ const StopIcon: React.FC = () => (
     </svg>
 );
 
+const getVoiceDisplayName = (voice: Voice) => {
+    const parts = voice.name.split('-');
+    const quality = parts[2]; // Standard or Wavenet
+    const variant = parts[3]; // A
+    const gender = voice.ssmlGender.charAt(0).toUpperCase() + voice.ssmlGender.slice(1).toLowerCase();
+    return `${quality} ${variant} (${gender})`;
+};
 
 const Controls: React.FC<ControlsProps> = ({
   isSpeaking,
@@ -35,7 +42,6 @@ const Controls: React.FC<ControlsProps> = ({
   voices,
   selectedVoice,
   onVoiceChange,
-  voiceLoadState
 }) => {
   return (
     <div className="w-full max-w-3xl bg-gray-800/50 backdrop-blur-sm p-4 rounded-lg shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-4 z-10 border border-gray-700">
@@ -62,20 +68,18 @@ const Controls: React.FC<ControlsProps> = ({
                 value={selectedVoice ? selectedVoice.name : ''}
                 onChange={(e) => onVoiceChange(e.target.value)}
                 className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-teal-500 focus:border-teal-500 block w-full p-2"
-                disabled={voiceLoadState !== 'loaded'}
+                disabled={voices.length === 0}
             >
-                {voiceLoadState === 'loaded' && voices.map((voice) => (
-                  <option key={voice.name} value={voice.name}>
-                    {voice.name}
-                  </option>
-                ))}
-                {voiceLoadState === 'loading' && (
-                  <option value="">Loading voices...</option>
-                )}
-                {voiceLoadState === 'unavailable' && (
-                  <option value="" disabled>
-                    Finnish voices unavailable
-                  </option>
+                {voices.length > 0 ? (
+                    voices.map((voice) => (
+                    <option key={voice.name} value={voice.name}>
+                        {getVoiceDisplayName(voice)}
+                    </option>
+                    ))
+                ) : (
+                    <option value="" disabled>
+                        Voices unavailable
+                    </option>
                 )}
             </select>
         </div>
