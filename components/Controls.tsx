@@ -1,15 +1,9 @@
 import React from 'react';
-import { Voice } from '../types';
 
 interface ControlsProps {
   isSpeaking: boolean;
   onReadAloud: () => void;
-  speechRate: number;
-  onRateChange: (rate: number) => void;
   onReset: () => void;
-  voices: Voice[];
-  selectedVoice: Voice | null;
-  onVoiceChange: (voiceName: string) => void;
 }
 
 const ReadAloudIcon: React.FC = () => (
@@ -25,27 +19,13 @@ const StopIcon: React.FC = () => (
     </svg>
 );
 
-const getVoiceDisplayName = (voice: Voice) => {
-    const parts = voice.name.split('-');
-    const quality = parts[2]; // Standard or Wavenet
-    const variant = parts[3]; // A
-    const gender = voice.ssmlGender.charAt(0).toUpperCase() + voice.ssmlGender.slice(1).toLowerCase();
-    return `${quality} ${variant} (${gender})`;
-};
-
 const Controls: React.FC<ControlsProps> = ({
   isSpeaking,
   onReadAloud,
-  speechRate,
-  onRateChange,
   onReset,
-  voices,
-  selectedVoice,
-  onVoiceChange,
 }) => {
   return (
-    <div className="w-full max-w-3xl bg-gray-800/50 backdrop-blur-sm p-4 rounded-lg shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4 sticky top-4 z-10 border border-gray-700">
-      <div className="flex items-center gap-4">
+    <div className="w-full max-w-3xl bg-gray-800/50 backdrop-blur-sm p-4 rounded-lg shadow-xl flex items-center justify-start gap-4 sticky top-4 z-10 border border-gray-700">
         <button
           onClick={onReadAloud}
           className="flex items-center justify-center bg-teal-500 hover:bg-teal-600 text-white font-bold py-2 px-4 rounded-full transition-transform transform hover:scale-105"
@@ -59,52 +39,6 @@ const Controls: React.FC<ControlsProps> = ({
         >
             New Text
         </button>
-      </div>
-      <div className="flex flex-col sm:flex-row items-center gap-6 w-full sm:w-auto">
-        <div className="flex items-center gap-2 text-sm w-full sm:w-auto">
-            <label htmlFor="voice-select" className="font-medium text-gray-300 whitespace-nowrap">Voice:</label>
-            <select
-                id="voice-select"
-                value={selectedVoice ? selectedVoice.name : ''}
-                onChange={(e) => onVoiceChange(e.target.value)}
-                className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-teal-500 focus:border-teal-500 block w-full p-2"
-                disabled={voices.length === 0}
-            >
-                {voices.length > 0 ? (
-                    voices.map((voice) => (
-                    <option key={voice.name} value={voice.name}>
-                        {getVoiceDisplayName(voice)}
-                    </option>
-                    ))
-                ) : (
-                    <option value="" disabled>
-                        Voices unavailable
-                    </option>
-                )}
-            </select>
-        </div>
-        <div className="flex items-center gap-3 text-sm w-full sm:w-auto">
-            <span className="text-gray-300">Slow</span>
-            <div className="w-full sm:w-32">
-                <input
-                type="range"
-                min="0.5"
-                max="2"
-                step="0.1"
-                value={speechRate}
-                onChange={(e) => onRateChange(parseFloat(e.target.value))}
-                className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-teal-400"
-                />
-                <div className="flex justify-between text-xs text-gray-400 mt-1 px-1">
-                    <span>0.5</span>
-                    <span>1.0</span>
-                    <span>1.5</span>
-                    <span>2.0</span>
-                </div>
-            </div>
-            <span className="text-gray-300">Fast</span>
-        </div>
-      </div>
     </div>
   );
 };

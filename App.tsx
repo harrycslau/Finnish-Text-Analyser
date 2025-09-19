@@ -1,12 +1,14 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { WordData, TooltipData, SentenceData, Voice } from './types';
+import { WordData, TooltipData, SentenceData, SynthesizedSpeech } from './types';
 import { translateWord } from './services/geminiService';
-import { synthesizeSpeech, finnishVoices } from './services/ttsService';
+import { synthesizeSpeech } from './services/ttsService';
 import Word from './components/Word';
 import Tooltip from './components/Tooltip';
 import Controls from './components/Controls';
 import Spinner from './components/Spinner';
+
+const PRELOAD_AHEAD_COUNT = 2; // Preload this many sentences ahead
 
 const App: React.FC = () => {
   const [text, setText] = useState<string>('');
@@ -15,16 +17,14 @@ const App: React.FC = () => {
   
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [speakingSentenceId, setSpeakingSentenceId] = useState<number | null>(null);
-  const [speechRate, setSpeechRate] = useState<number>(1);
-  const [voices] = useState<Voice[]>(finnishVoices);
-  const [selectedVoice, setSelectedVoice] = useState<Voice | null>(finnishVoices.length > 0 ? finnishVoices[0] : null);
-  const [ttsApiKey, setTtsApiKey] = useState<string>('');
   
   const [tooltip, setTooltip] = useState<TooltipData>(null);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isCancelledRef = useRef(false);
+  const audioCacheRef = useRef<Map<number, SynthesizedSpeech>>(new Map());
+  const preloadingRef = useRef<Set<number>>(new Set()); // Track in-progress preloads
 
   // Stop speech on component unmount
   useEffect(() => {
@@ -111,34 +111,58 @@ const App: React.FC = () => {
     }
   }, [isTranslating]);
 
-  const playAudio = (base64Audio: string): Promise<void> => {
+  const playAudio = (speech: SynthesizedSpeech): Promise<void> => {
     return new Promise((resolve, reject) => {
         if (isCancelledRef.current) {
             return resolve();
         }
-        const audioSrc = `data:audio/mp3;base64,${base64Audio}`;
-        const audio = new Audio(audioSrc);
-        audioRef.current = audio;
 
-        audio.onended = () => {
-            audioRef.current = null;
-            resolve();
+        // Helper to convert base64 to a Blob, which is more reliable for audio playback.
+        const base64ToBlob = (base64: string, mimeType: string): Blob => {
+            const byteCharacters = atob(base64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            return new Blob([byteArray], { type: mimeType });
         };
-        audio.onerror = (e) => {
-            audioRef.current = null;
-            console.error("Audio playback error", e);
-            reject(new Error("Audio playback failed"));
-        };
-        
-        audio.play().catch(e => {
-            console.error("Error playing audio:", e);
-            reject(e);
-        });
+
+        try {
+            const audioBlob = base64ToBlob(speech.data, speech.mimeType);
+            const audioUrl = URL.createObjectURL(audioBlob);
+            const audio = new Audio(audioUrl);
+            audioRef.current = audio;
+
+            const cleanup = () => {
+                URL.revokeObjectURL(audioUrl);
+                audioRef.current = null;
+            };
+
+            audio.onended = () => {
+                cleanup();
+                resolve();
+            };
+            audio.onerror = (e) => {
+                cleanup();
+                console.error("Audio playback error", e);
+                reject(new Error("Audio playback failed"));
+            };
+            
+            audio.play().catch(e => {
+                cleanup();
+                console.error("Error playing audio:", e);
+                reject(e);
+            });
+        } catch (error) {
+            console.error("Error processing audio data:", error);
+            reject(new Error("Failed to process audio data."));
+        }
     });
   };
 
-  const speakSentences = useCallback(async (apiKey: string, startIndex: number = 0) => {
-    if (!selectedVoice || startIndex >= sentences.length) {
+  const speakSentences = useCallback(async (startIndex: number = 0) => {
+    if (startIndex >= sentences.length) {
         setIsSpeaking(false);
         setSpeakingSentenceId(null);
         return;
@@ -155,13 +179,51 @@ const App: React.FC = () => {
         const sentence = sentences[i];
         setSpeakingSentenceId(sentence.id);
 
+        // --- Start preloading next sentences ---
+        for (let j = 1; j <= PRELOAD_AHEAD_COUNT; j++) {
+            const preloadIndex = i + j;
+            if (preloadIndex < sentences.length) {
+                const sentenceToPreload = sentences[preloadIndex];
+                const id = sentenceToPreload.id;
+
+                // Check if not already cached or being preloaded
+                if (!audioCacheRef.current.has(id) && !preloadingRef.current.has(id)) {
+                    preloadingRef.current.add(id);
+                    // Fire-and-forget promise for caching
+                    synthesizeSpeech(sentenceToPreload.text)
+                        .then(audioData => {
+                            if (!isCancelledRef.current) {
+                                audioCacheRef.current.set(id, audioData);
+                            }
+                        })
+                        .catch(err => {
+                            console.error(`Preloading failed for sentence ${id}:`, err);
+                        })
+                        .finally(() => {
+                            preloadingRef.current.delete(id);
+                        });
+                }
+            }
+        }
+
+
         try {
-            const audioContent = await synthesizeSpeech(sentence.text, selectedVoice.name, speechRate, apiKey);
-            if (isCancelledRef.current) break;
-            await playAudio(audioContent);
+            let audioData = audioCacheRef.current.get(sentence.id);
+
+            // If not in cache, fetch and wait.
+            if (!audioData) {
+                audioData = await synthesizeSpeech(sentence.text);
+                if (isCancelledRef.current) break;
+                audioCacheRef.current.set(sentence.id, audioData);
+            }
+            
+            if (isCancelledRef.current) break; // check again before playing
+            await playAudio(audioData);
+
         } catch (error) {
             console.error("Failed to speak sentence:", error);
-            alert(`Error during text-to-speech: ${error.message}`);
+            const errorMessage = error instanceof Error ? error.message : "An unknown TTS error occurred.";
+            alert(`Error during text-to-speech: ${errorMessage}`);
             break; // Stop on error
         }
     }
@@ -170,7 +232,8 @@ const App: React.FC = () => {
     setIsSpeaking(false);
     setSpeakingSentenceId(null);
     audioRef.current = null;
-  }, [sentences, speechRate, selectedVoice]);
+  }, [sentences]);
+
 
   const handleReadAloud = () => {
     if (isSpeaking) {
@@ -183,26 +246,7 @@ const App: React.FC = () => {
       setIsSpeaking(false);
       setSpeakingSentenceId(null);
     } else {
-        const startSpeaking = (key: string) => {
-            setTtsApiKey(key);
-            speakSentences(key, 0);
-        };
-  
-        if (ttsApiKey) {
-            startSpeaking(ttsApiKey);
-        } else {
-            const key = window.prompt("Please enter your Google Cloud API Key for the Text-to-Speech service. The key provided by AI Studio is for the Gemini API only and won't work for TTS.");
-            if (key) {
-                startSpeaking(key);
-            }
-        }
-    }
-  };
-
-  const handleVoiceChange = (voiceName: string) => {
-    const voice = voices.find(v => v.name === voiceName);
-    if (voice) {
-      setSelectedVoice(voice);
+        speakSentences(0);
     }
   };
   
@@ -213,12 +257,13 @@ const App: React.FC = () => {
       audioRef.current.src = '';
       audioRef.current = null;
     }
+    audioCacheRef.current.clear();
+    preloadingRef.current.clear();
     setIsAnalyzing(false);
     setSentences([]);
     setIsSpeaking(false);
     setSpeakingSentenceId(null);
     setTooltip(null);
-    // Do not reset the TTS API key, user might want to reuse it.
   }
 
   const renderInputView = () => (
@@ -246,12 +291,7 @@ const App: React.FC = () => {
       <Controls 
         isSpeaking={isSpeaking}
         onReadAloud={handleReadAloud}
-        speechRate={speechRate}
-        onRateChange={setSpeechRate}
         onReset={handleReset}
-        voices={voices}
-        selectedVoice={selectedVoice}
-        onVoiceChange={handleVoiceChange}
       />
       <div className="w-full max-w-3xl bg-gray-800 p-6 sm:p-8 rounded-lg shadow-xl border border-gray-700">
         <p className="text-xl sm:text-2xl text-gray-200 leading-relaxed text-left">

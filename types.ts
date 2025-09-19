@@ -16,8 +16,7 @@ export type TooltipData = {
   text: string;
 } | null;
 
-export interface Voice {
-    name: string;
-    ssmlGender: 'MALE' | 'FEMALE' | 'NEUTRAL';
-    languageCode: string;
-}
+export type SynthesizedSpeech = {
+  data: string;
+  mimeType: string;
+};
