@@ -1,13 +1,5 @@
 import { Voice } from '../types';
 
-if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set.");
-}
-
-const API_KEY = process.env.API_KEY;
-const TTS_API_URL = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${API_KEY}`;
-
-
 // Hardcoded list of Finnish voices from Google Cloud TTS
 export const finnishVoices: Voice[] = [
     { name: 'fi-FI-Standard-A', ssmlGender: 'FEMALE', languageCode: 'fi-FI' },
@@ -17,8 +9,11 @@ export const finnishVoices: Voice[] = [
 export const synthesizeSpeech = async (
   text: string, 
   voiceName: string, 
-  speakingRate: number
+  speakingRate: number,
+  apiKey: string
 ): Promise<string> => {
+  const TTS_API_URL = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
+
   const voice = finnishVoices.find(v => v.name === voiceName);
   if (!voice) {
       throw new Error("Invalid voice name");
@@ -48,7 +43,9 @@ export const synthesizeSpeech = async (
     if (!response.ok) {
         const errorData = await response.json();
         console.error("Google Cloud TTS API error:", errorData);
-        throw new Error(`API request failed with status ${response.status}: ${errorData?.error?.message}`);
+        // Provide a clearer error message to the user.
+        const message = errorData?.error?.message || `API request failed with status ${response.status}`;
+        throw new Error(message);
     }
 
     const data = await response.json();

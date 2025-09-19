@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { WordData, TooltipData, SentenceData, Voice } from './types';
 import { translateWord } from './services/geminiService';
@@ -17,6 +18,7 @@ const App: React.FC = () => {
   const [speechRate, setSpeechRate] = useState<number>(1);
   const [voices] = useState<Voice[]>(finnishVoices);
   const [selectedVoice, setSelectedVoice] = useState<Voice | null>(finnishVoices.length > 0 ? finnishVoices[0] : null);
+  const [ttsApiKey, setTtsApiKey] = useState<string>('');
   
   const [tooltip, setTooltip] = useState<TooltipData>(null);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
@@ -58,13 +60,12 @@ const App: React.FC = () => {
     const sentenceRegex = /[^.!?]+[.!?]?/g;
     const sentencesText = text.match(sentenceRegex) || [];
 
-    sentencesText.forEach(sentenceText => {
+    // FIX: Replaced `forEach` with a `for...of` loop to resolve a TypeScript
+    // type inference issue where `sentenceText` was incorrectly inferred as `never`.
+    for (const sentenceText of sentencesText) {
       const trimmedSentence = sentenceText.trim();
-      if (!trimmedSentence) return;
+      if (!trimmedSentence) continue;
 
-      // FIX: Replaced a complex `while` loop with `string.match()` and a `for...of` loop.
-      // This is more readable and fixes a TypeScript type inference issue where
-      // a variable was incorrectly inferred as `never`.
       const sentenceWords: WordData[] = [];
       const wordRegex = /\S+/g;
       const words = trimmedSentence.match(wordRegex) || [];
@@ -83,7 +84,7 @@ const App: React.FC = () => {
               words: sentenceWords,
           });
       }
-    });
+    }
 
     setSentences(newSentences);
     setIsAnalyzing(true);
@@ -136,7 +137,7 @@ const App: React.FC = () => {
     });
   };
 
-  const speakSentences = useCallback(async (startIndex: number = 0) => {
+  const speakSentences = useCallback(async (apiKey: string, startIndex: number = 0) => {
     if (!selectedVoice || startIndex >= sentences.length) {
         setIsSpeaking(false);
         setSpeakingSentenceId(null);
@@ -155,12 +156,12 @@ const App: React.FC = () => {
         setSpeakingSentenceId(sentence.id);
 
         try {
-            const audioContent = await synthesizeSpeech(sentence.text, selectedVoice.name, speechRate);
+            const audioContent = await synthesizeSpeech(sentence.text, selectedVoice.name, speechRate, apiKey);
             if (isCancelledRef.current) break;
             await playAudio(audioContent);
         } catch (error) {
             console.error("Failed to speak sentence:", error);
-            // Optional: Show an error to the user
+            alert(`Error during text-to-speech: ${error.message}`);
             break; // Stop on error
         }
     }
@@ -182,7 +183,19 @@ const App: React.FC = () => {
       setIsSpeaking(false);
       setSpeakingSentenceId(null);
     } else {
-      speakSentences(0);
+        const startSpeaking = (key: string) => {
+            setTtsApiKey(key);
+            speakSentences(key, 0);
+        };
+  
+        if (ttsApiKey) {
+            startSpeaking(ttsApiKey);
+        } else {
+            const key = window.prompt("Please enter your Google Cloud API Key for the Text-to-Speech service. The key provided by AI Studio is for the Gemini API only and won't work for TTS.");
+            if (key) {
+                startSpeaking(key);
+            }
+        }
     }
   };
 
@@ -205,6 +218,7 @@ const App: React.FC = () => {
     setIsSpeaking(false);
     setSpeakingSentenceId(null);
     setTooltip(null);
+    // Do not reset the TTS API key, user might want to reuse it.
   }
 
   const renderInputView = () => (
