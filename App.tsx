@@ -17,6 +17,7 @@ const App: React.FC = () => {
   
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [speakingSentenceId, setSpeakingSentenceId] = useState<number | null>(null);
+  const [playbackRate, setPlaybackRate] = useState<number>(1);
   
   const [tooltip, setTooltip] = useState<TooltipData>(null);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
@@ -47,6 +48,13 @@ const App: React.FC = () => {
       window.removeEventListener('click', closeTooltip);
     };
   }, [tooltip]);
+  
+  // Apply playback rate changes to the current audio element
+  useEffect(() => {
+    if (audioRef.current) {
+        audioRef.current.playbackRate = playbackRate;
+    }
+  }, [playbackRate]);
 
 
   const handleAnalyse = () => {
@@ -111,7 +119,7 @@ const App: React.FC = () => {
     }
   }, [isTranslating]);
 
-  const playAudio = (speech: SynthesizedSpeech): Promise<void> => {
+  const playAudio = useCallback((speech: SynthesizedSpeech): Promise<void> => {
     return new Promise((resolve, reject) => {
         if (isCancelledRef.current) {
             return resolve();
@@ -132,6 +140,7 @@ const App: React.FC = () => {
             const audioBlob = base64ToBlob(speech.data, speech.mimeType);
             const audioUrl = URL.createObjectURL(audioBlob);
             const audio = new Audio(audioUrl);
+            audio.playbackRate = playbackRate;
             audioRef.current = audio;
 
             const cleanup = () => {
@@ -159,7 +168,7 @@ const App: React.FC = () => {
             reject(new Error("Failed to process audio data."));
         }
     });
-  };
+  }, [playbackRate]);
 
   const speakSentences = useCallback(async (startIndex: number = 0) => {
     if (startIndex >= sentences.length) {
@@ -232,7 +241,7 @@ const App: React.FC = () => {
     setIsSpeaking(false);
     setSpeakingSentenceId(null);
     audioRef.current = null;
-  }, [sentences]);
+  }, [sentences, playAudio]);
 
 
   const handleReadAloud = () => {
@@ -248,6 +257,10 @@ const App: React.FC = () => {
     } else {
         speakSentences(0);
     }
+  };
+
+  const handlePlaybackRateChange = (rate: number) => {
+    setPlaybackRate(rate);
   };
   
   const handleReset = () => {
@@ -292,6 +305,8 @@ const App: React.FC = () => {
         isSpeaking={isSpeaking}
         onReadAloud={handleReadAloud}
         onReset={handleReset}
+        playbackRate={playbackRate}
+        onPlaybackRateChange={handlePlaybackRateChange}
       />
       <div className="w-full max-w-3xl bg-gray-800 p-6 sm:p-8 rounded-lg shadow-xl border border-gray-700">
         <p className="text-xl sm:text-2xl text-gray-200 leading-relaxed text-left">

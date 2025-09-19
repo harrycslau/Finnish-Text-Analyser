@@ -1,9 +1,12 @@
+
 import React from 'react';
 
 interface ControlsProps {
   isSpeaking: boolean;
+  playbackRate: number;
   onReadAloud: () => void;
   onReset: () => void;
+  onPlaybackRateChange: (rate: number) => void;
 }
 
 const ReadAloudIcon: React.FC = () => (
@@ -23,6 +26,8 @@ const Controls: React.FC<ControlsProps> = ({
   isSpeaking,
   onReadAloud,
   onReset,
+  playbackRate,
+  onPlaybackRateChange,
 }) => {
   return (
     <div className="w-full max-w-3xl bg-gray-800/50 backdrop-blur-sm p-4 rounded-lg shadow-xl flex items-center justify-start gap-4 sticky top-4 z-10 border border-gray-700">
@@ -39,6 +44,20 @@ const Controls: React.FC<ControlsProps> = ({
         >
             New Text
         </button>
+        <div className="flex items-center gap-3 ml-auto">
+            <span className="text-sm font-medium text-gray-300">Speed</span>
+            <input
+                id="playback-speed"
+                type="range"
+                min="0.5"
+                max="2"
+                step="0.1"
+                value={playbackRate}
+                onChange={(e) => onPlaybackRateChange(parseFloat(e.target.value))}
+                className="w-32 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-teal-500"
+            />
+            <span className="text-sm font-mono text-gray-200 w-10 text-center">{playbackRate.toFixed(1)}x</span>
+        </div>
     </div>
   );
 };
