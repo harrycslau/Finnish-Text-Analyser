@@ -1,18 +1,18 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { WordData, TooltipData, SentenceData, SynthesizedSpeech } from './types';
+import { TooltipData, SynthesizedSpeech } from './types';
 import { translateWord } from './services/geminiService';
 import { synthesizeSpeech } from './services/ttsService';
-import Word from './components/Word';
+import { sanitizeHtml } from './services/htmlService';
 import Tooltip from './components/Tooltip';
 import Controls from './components/Controls';
 import Spinner from './components/Spinner';
+import RichTextDisplay from './components/RichTextDisplay';
 
 const PRELOAD_AHEAD_COUNT = 2; // Preload this many sentences ahead
 
 const App: React.FC = () => {
-  const [text, setText] = useState<string>('');
-  const [sentences, setSentences] = useState<SentenceData[]>([]);
+  const [htmlContent, setHtmlContent] = useState<string>('');
+  const [sentencesForTTS, setSentencesForTTS] = useState<string[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
@@ -25,7 +25,7 @@ const App: React.FC = () => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isCancelledRef = useRef(false);
   const audioCacheRef = useRef<Map<number, SynthesizedSpeech>>(new Map());
-  const preloadingRef = useRef<Set<number>>(new Set()); // Track in-progress preloads
+  const preloadingRef = useRef<Set<number>>(new Set());
 
   // Stop speech on component unmount
   useEffect(() => {
@@ -58,49 +58,26 @@ const App: React.FC = () => {
 
 
   const handleAnalyse = () => {
-    if (!text.trim()) return;
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = htmlContent;
+    const plainText = tempDiv.innerText;
 
-    const newSentences: SentenceData[] = [];
-    let sentenceIdCounter = 0;
-    let wordIdCounter = 0;
+    if (!plainText.trim()) return;
     
-    // Split text into sentences. Regex tries to keep delimiters.
+    // Split text into sentences for the TTS engine. Regex tries to keep delimiters.
     const sentenceRegex = /[^.!?]+[.!?]?/g;
-    const sentencesText = text.match(sentenceRegex) || [];
+    const sentencesText = plainText.match(sentenceRegex) || [];
+    setSentencesForTTS(sentencesText.filter(s => s.trim().length > 0));
 
-    // FIX: Replaced `forEach` with a `for...of` loop to resolve a TypeScript
-    // type inference issue where `sentenceText` was incorrectly inferred as `never`.
-    for (const sentenceText of sentencesText) {
-      const trimmedSentence = sentenceText.trim();
-      if (!trimmedSentence) continue;
-
-      const sentenceWords: WordData[] = [];
-      const wordRegex = /\S+/g;
-      const words = trimmedSentence.match(wordRegex) || [];
-
-      for (const word of words) {
-        sentenceWords.push({
-          id: wordIdCounter++,
-          text: word,
-        });
-      }
-      
-      if (sentenceWords.length > 0) {
-          newSentences.push({
-              id: sentenceIdCounter++,
-              text: trimmedSentence,
-              words: sentenceWords,
-          });
-      }
-    }
-
-    setSentences(newSentences);
     setIsAnalyzing(true);
   };
   
-  const handleWordClick = useCallback(async (wordData: WordData, event: React.MouseEvent<HTMLSpanElement>) => {
+  const handleWordClick = useCallback(async (event: React.MouseEvent<HTMLSpanElement>) => {
     event.stopPropagation();
     if (isTranslating) return;
+
+    const wordText = event.currentTarget.textContent || '';
+    if (!wordText.trim()) return;
 
     setIsTranslating(true);
     const rect = event.currentTarget.getBoundingClientRect();
@@ -110,7 +87,7 @@ const App: React.FC = () => {
     setTooltip({ x: tooltipX, y: tooltipY, text: '...' });
 
     try {
-      const translation = await translateWord(wordData.text);
+      const translation = await translateWord(wordText);
       setTooltip({ x: tooltipX, y: tooltipY, text: translation });
     } catch (error) {
       setTooltip({ x: tooltipX, y: tooltipY, text: 'Error' });
@@ -125,7 +102,6 @@ const App: React.FC = () => {
             return resolve();
         }
 
-        // Helper to convert base64 to a Blob, which is more reliable for audio playback.
         const base64ToBlob = (base64: string, mimeType: string): Blob => {
             const byteCharacters = atob(base64);
             const byteNumbers = new Array(byteCharacters.length);
@@ -154,14 +130,28 @@ const App: React.FC = () => {
             };
             audio.onerror = (e) => {
                 cleanup();
-                console.error("Audio playback error", e);
-                reject(new Error("Audio playback failed"));
+                // If speech was cancelled by the user, this "error" is expected.
+                // We can resolve the promise peacefully instead of rejecting.
+                if (isCancelledRef.current) {
+                    console.log("Audio playback cancelled by user (onerror).");
+                    resolve();
+                } else {
+                    console.error("Audio playback error", e);
+                    reject(new Error("Audio playback failed"));
+                }
             };
             
             audio.play().catch(e => {
                 cleanup();
-                console.error("Error playing audio:", e);
-                reject(e);
+                // The play() promise rejects when interrupted by pause().
+                // This is expected during a manual stop, so we check our cancellation flag.
+                if (isCancelledRef.current) {
+                    console.log("Audio playback cancelled by user (play promise rejected).");
+                    resolve();
+                } else {
+                    console.error("Error playing audio:", e);
+                    reject(e);
+                }
             });
         } catch (error) {
             console.error("Error processing audio data:", error);
@@ -171,7 +161,7 @@ const App: React.FC = () => {
   }, [playbackRate]);
 
   const speakSentences = useCallback(async (startIndex: number = 0) => {
-    if (startIndex >= sentences.length) {
+    if (startIndex >= sentencesForTTS.length) {
         setIsSpeaking(false);
         setSpeakingSentenceId(null);
         return;
@@ -180,68 +170,51 @@ const App: React.FC = () => {
     isCancelledRef.current = false;
     setIsSpeaking(true);
 
-    for (let i = startIndex; i < sentences.length; i++) {
-        if (isCancelledRef.current) {
-            break;
-        }
+    for (let i = startIndex; i < sentencesForTTS.length; i++) {
+        if (isCancelledRef.current) break;
 
-        const sentence = sentences[i];
-        setSpeakingSentenceId(sentence.id);
+        const sentenceText = sentencesForTTS[i];
+        setSpeakingSentenceId(i);
 
         // --- Start preloading next sentences ---
         for (let j = 1; j <= PRELOAD_AHEAD_COUNT; j++) {
             const preloadIndex = i + j;
-            if (preloadIndex < sentences.length) {
-                const sentenceToPreload = sentences[preloadIndex];
-                const id = sentenceToPreload.id;
-
-                // Check if not already cached or being preloaded
+            if (preloadIndex < sentencesForTTS.length) {
+                const sentenceToPreload = sentencesForTTS[preloadIndex];
+                const id = preloadIndex;
                 if (!audioCacheRef.current.has(id) && !preloadingRef.current.has(id)) {
                     preloadingRef.current.add(id);
-                    // Fire-and-forget promise for caching
-                    synthesizeSpeech(sentenceToPreload.text)
+                    synthesizeSpeech(sentenceToPreload)
                         .then(audioData => {
-                            if (!isCancelledRef.current) {
-                                audioCacheRef.current.set(id, audioData);
-                            }
+                            if (!isCancelledRef.current) audioCacheRef.current.set(id, audioData);
                         })
-                        .catch(err => {
-                            console.error(`Preloading failed for sentence ${id}:`, err);
-                        })
-                        .finally(() => {
-                            preloadingRef.current.delete(id);
-                        });
+                        .catch(err => console.error(`Preloading failed for sentence ${id}:`, err))
+                        .finally(() => preloadingRef.current.delete(id));
                 }
             }
         }
 
-
         try {
-            let audioData = audioCacheRef.current.get(sentence.id);
-
-            // If not in cache, fetch and wait.
+            let audioData = audioCacheRef.current.get(i);
             if (!audioData) {
-                audioData = await synthesizeSpeech(sentence.text);
+                audioData = await synthesizeSpeech(sentenceText);
                 if (isCancelledRef.current) break;
-                audioCacheRef.current.set(sentence.id, audioData);
+                audioCacheRef.current.set(i, audioData);
             }
-            
-            if (isCancelledRef.current) break; // check again before playing
+            if (isCancelledRef.current) break;
             await playAudio(audioData);
-
         } catch (error) {
             console.error("Failed to speak sentence:", error);
             const errorMessage = error instanceof Error ? error.message : "An unknown TTS error occurred.";
             alert(`Error during text-to-speech: ${errorMessage}`);
-            break; // Stop on error
+            break;
         }
     }
 
-    // Clean up after finishing or being cancelled
     setIsSpeaking(false);
     setSpeakingSentenceId(null);
     audioRef.current = null;
-  }, [sentences, playAudio]);
+  }, [sentencesForTTS, playAudio]);
 
 
   const handleReadAloud = () => {
@@ -249,7 +222,7 @@ const App: React.FC = () => {
       isCancelledRef.current = true;
       if (audioRef.current) {
           audioRef.current.pause();
-          audioRef.current.src = ''; // Stop download & release resources
+          audioRef.current.src = ''; 
           audioRef.current = null;
       }
       setIsSpeaking(false);
@@ -273,22 +246,34 @@ const App: React.FC = () => {
     audioCacheRef.current.clear();
     preloadingRef.current.clear();
     setIsAnalyzing(false);
-    setSentences([]);
+    setSentencesForTTS([]);
+    setHtmlContent('');
     setIsSpeaking(false);
     setSpeakingSentenceId(null);
     setTooltip(null);
-  }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const clipboardData = e.clipboardData;
+    const pastedHtml = clipboardData.getData('text/html');
+    const sanitized = sanitizeHtml(pastedHtml || clipboardData.getData('text/plain'));
+    document.execCommand('insertHTML', false, sanitized);
+  };
 
   const renderInputView = () => (
     <div className="w-full max-w-2xl flex flex-col items-center gap-6 p-4">
       <h1 className="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-teal-300 to-blue-500 text-center">
         Finnish Text Analyzer
       </h1>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Tervetuloa! Kirjoita tai liitä suomenkielistä tekstiä tähän."
-        className="w-full h-64 bg-gray-800 border border-gray-600 rounded-lg p-4 text-lg text-gray-200 focus:ring-2 focus:ring-teal-400 focus:border-teal-400 transition resize-none shadow-lg"
+      <div
+        contentEditable
+        onInput={(e) => setHtmlContent(e.currentTarget.innerHTML)}
+        onPaste={handlePaste}
+        data-placeholder="Tervetuloa! Kirjoita tai liitä suomenkielistä tekstiä tähän."
+        className="rich-text-input w-full h-64 overflow-y-auto bg-gray-800 border border-gray-600 rounded-lg p-4 text-lg text-gray-200 focus:ring-2 focus:ring-teal-400 focus:border-teal-400 transition resize-y shadow-lg"
+        // Use dangerouslySetInnerHTML only for initial state hydration on reset
+        dangerouslySetInnerHTML={{ __html: htmlContent }} 
       />
       <button
         onClick={handleAnalyse}
@@ -309,29 +294,11 @@ const App: React.FC = () => {
         onPlaybackRateChange={handlePlaybackRateChange}
       />
       <div className="w-full max-w-3xl bg-gray-800 p-6 sm:p-8 rounded-lg shadow-xl border border-gray-700">
-        <p className="text-xl sm:text-2xl text-gray-200 leading-relaxed text-left">
-          {sentences.map((sentence) => {
-            const isSentenceHighlighted = speakingSentenceId === sentence.id;
-            return (
-              <span
-                key={sentence.id}
-                className={`transition-colors duration-300 ease-in-out ${isSentenceHighlighted ? 'bg-teal-500 text-white rounded' : ''}`}
-                // This padding gives the highlight its vertical size.
-                style={{ padding: isSentenceHighlighted ? '2px 0' : '0' }}
-              >
-                {sentence.words.map((word) => (
-                  <React.Fragment key={word.id}>
-                    <Word
-                      wordData={word}
-                      isHighlighted={isSentenceHighlighted}
-                      onClick={handleWordClick}
-                    />{' '}
-                  </React.Fragment>
-                ))}
-              </span>
-            );
-          })}
-        </p>
+          <RichTextDisplay
+            htmlContent={htmlContent}
+            onWordClick={handleWordClick}
+            speakingSentenceId={speakingSentenceId}
+          />
       </div>
       {tooltip && isTranslating && tooltip.text === '...' && (
         <div 
@@ -347,7 +314,6 @@ const App: React.FC = () => {
         </div>
       )}
       {tooltip && (tooltip.text !== '...' || !isTranslating) && <Tooltip tooltipData={tooltip} />}
-
     </div>
   );
 
