@@ -184,7 +184,8 @@ const App: React.FC = () => {
                 const id = preloadIndex;
                 if (!audioCacheRef.current.has(id) && !preloadingRef.current.has(id)) {
                     preloadingRef.current.add(id);
-                    synthesizeSpeech(sentenceToPreload)
+                    // Sanitize text by removing newlines before sending to TTS
+                    synthesizeSpeech(sentenceToPreload.replace(/\n/g, ' '))
                         .then(audioData => {
                             if (!isCancelledRef.current) audioCacheRef.current.set(id, audioData);
                         })
@@ -197,7 +198,8 @@ const App: React.FC = () => {
         try {
             let audioData = audioCacheRef.current.get(i);
             if (!audioData) {
-                audioData = await synthesizeSpeech(sentenceText);
+                 // Sanitize text by removing newlines before sending to TTS
+                audioData = await synthesizeSpeech(sentenceText.replace(/\n/g, ' '));
                 if (isCancelledRef.current) break;
                 audioCacheRef.current.set(i, audioData);
             }

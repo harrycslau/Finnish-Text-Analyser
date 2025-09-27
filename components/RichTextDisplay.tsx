@@ -93,7 +93,9 @@ const parseHtmlToReact = (
                 });
             }
 
-            return React.createElement(tagName, { style }, children);
+            // By spreading the `children` array, we correctly pass them as arguments.
+            // For void elements like <br>, the `children` array is empty, so no children are passed, fixing the error.
+            return React.createElement(tagName, { style }, ...children);
         }
 
         return null;

@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Modality } from "@google/genai";
 import { SynthesizedSpeech } from "../types";
 
@@ -116,7 +115,8 @@ export const synthesizeSpeech = async (
         },
     });
 
-    for (const part of response.candidates[0].content.parts) {
+    // Safely access response parts to prevent crashes on empty/invalid responses.
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData && part.inlineData.mimeType.startsWith('audio/')) {
         const { data, mimeType } = part.inlineData;
 
