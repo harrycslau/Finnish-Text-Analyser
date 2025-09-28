@@ -1,6 +1,7 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { TooltipData, SynthesizedSpeech } from './types';
-import { translateWord } from './services/geminiService';
+import { translateWord, translateWordsBatch } from './services/geminiService';
 import { synthesizeSpeech } from './services/ttsService';
 import { sanitizeHtml } from './services/htmlService';
 import Tooltip from './components/Tooltip';
@@ -21,6 +22,8 @@ const App: React.FC = () => {
   
   const [tooltip, setTooltip] = useState<TooltipData>(null);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
+  const [isBatchTranslating, setIsBatchTranslating] = useState<boolean>(false);
+  const [translations, setTranslations] = useState<Map<string, string>>(new Map());
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isCancelledRef = useRef(false);
@@ -57,19 +60,45 @@ const App: React.FC = () => {
   }, [playbackRate]);
 
 
-  const handleAnalyse = () => {
+  const handleAnalyse = async () => {
     const tempDiv = document.createElement('div');
     tempDiv.innerHTML = htmlContent;
     const plainText = tempDiv.innerText;
 
     if (!plainText.trim()) return;
     
-    // Split text into sentences for the TTS engine. Regex tries to keep delimiters.
+    setIsBatchTranslating(true);
+
+    // 1. Split text into sentences for TTS (this is fast)
     const sentenceRegex = /[^.!?]+[.!?]?/g;
     const sentencesText = plainText.match(sentenceRegex) || [];
     setSentencesForTTS(sentencesText.filter(s => s.trim().length > 0));
 
+    // 2. Switch to the analysis view immediately
     setIsAnalyzing(true);
+
+    // 3. Start batch translation in the background
+    try {
+      // Extract unique words (lowercase for consistency and to avoid duplicates)
+      const wordRegex = /[a-zA-ZäöüÄÖÜ]+/g;
+      const words = plainText.match(wordRegex) || [];
+      const uniqueWords = Array.from(new Set(words.map(w => w.toLowerCase())));
+
+      // Chunk words into batches of 50
+      const chunkSize = 50;
+      for (let i = 0; i < uniqueWords.length; i += chunkSize) {
+          const chunk = uniqueWords.slice(i, i + chunkSize);
+          const newTranslations = await translateWordsBatch(chunk);
+          
+          // Merge new translations into the existing map without re-rendering per chunk
+          setTranslations(prevMap => new Map([...prevMap, ...newTranslations]));
+      }
+
+    } catch (error) {
+        console.error("Failed to perform batch translation:", error);
+    } finally {
+        setIsBatchTranslating(false);
+    }
   };
   
   const handleWordClick = useCallback(async (event: React.MouseEvent<HTMLSpanElement>) => {
@@ -79,22 +108,36 @@ const App: React.FC = () => {
     const wordText = event.currentTarget.textContent || '';
     if (!wordText.trim()) return;
 
-    setIsTranslating(true);
+    // Clean and normalize the word for lookup/API call
+    const cleanedWord = wordText.replace(/[.,!?;:)"'”\]`]*$/, '').toLowerCase();
+    if (!cleanedWord) return;
+
     const rect = event.currentTarget.getBoundingClientRect();
     const tooltipX = rect.left + rect.width / 2;
     const tooltipY = rect.top;
 
+    // 1. Check cache first for instant translation
+    const cachedTranslation = translations.get(cleanedWord);
+    if (cachedTranslation) {
+        setTooltip({ x: tooltipX, y: tooltipY, text: cachedTranslation });
+        return; // Found in cache, we're done!
+    }
+
+    // 2. Fallback to individual translation if not in cache
+    setIsTranslating(true);
     setTooltip({ x: tooltipX, y: tooltipY, text: '...' });
 
     try {
-      const translation = await translateWord(wordText);
+      const translation = await translateWord(cleanedWord);
+      // Update cache with the new translation for future clicks
+      setTranslations(prevMap => new Map(prevMap).set(cleanedWord, translation));
       setTooltip({ x: tooltipX, y: tooltipY, text: translation });
     } catch (error) {
       setTooltip({ x: tooltipX, y: tooltipY, text: 'Error' });
     } finally {
       setIsTranslating(false);
     }
-  }, [isTranslating]);
+  }, [isTranslating, translations]);
 
   const playAudio = useCallback((speech: SynthesizedSpeech): Promise<void> => {
     return new Promise((resolve, reject) => {
@@ -130,8 +173,6 @@ const App: React.FC = () => {
             };
             audio.onerror = (e) => {
                 cleanup();
-                // If speech was cancelled by the user, this "error" is expected.
-                // We can resolve the promise peacefully instead of rejecting.
                 if (isCancelledRef.current) {
                     console.log("Audio playback cancelled by user (onerror).");
                     resolve();
@@ -143,8 +184,6 @@ const App: React.FC = () => {
             
             audio.play().catch(e => {
                 cleanup();
-                // The play() promise rejects when interrupted by pause().
-                // This is expected during a manual stop, so we check our cancellation flag.
                 if (isCancelledRef.current) {
                     console.log("Audio playback cancelled by user (play promise rejected).");
                     resolve();
@@ -184,7 +223,6 @@ const App: React.FC = () => {
                 const id = preloadIndex;
                 if (!audioCacheRef.current.has(id) && !preloadingRef.current.has(id)) {
                     preloadingRef.current.add(id);
-                    // Sanitize text by removing newlines before sending to TTS
                     synthesizeSpeech(sentenceToPreload.replace(/\n/g, ' '))
                         .then(audioData => {
                             if (!isCancelledRef.current) audioCacheRef.current.set(id, audioData);
@@ -198,7 +236,6 @@ const App: React.FC = () => {
         try {
             let audioData = audioCacheRef.current.get(i);
             if (!audioData) {
-                 // Sanitize text by removing newlines before sending to TTS
                 audioData = await synthesizeSpeech(sentenceText.replace(/\n/g, ' '));
                 if (isCancelledRef.current) break;
                 audioCacheRef.current.set(i, audioData);
@@ -247,12 +284,14 @@ const App: React.FC = () => {
     }
     audioCacheRef.current.clear();
     preloadingRef.current.clear();
+    setTranslations(new Map());
     setIsAnalyzing(false);
     setSentencesForTTS([]);
     setHtmlContent('');
     setIsSpeaking(false);
     setSpeakingSentenceId(null);
     setTooltip(null);
+    setIsBatchTranslating(false);
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
@@ -274,14 +313,15 @@ const App: React.FC = () => {
         onPaste={handlePaste}
         data-placeholder="Tervetuloa! Kirjoita tai liitä suomenkielistä tekstiä tähän."
         className="rich-text-input w-full h-64 overflow-y-auto bg-gray-800 border border-gray-600 rounded-lg p-4 text-lg text-gray-200 focus:ring-2 focus:ring-teal-400 focus:border-teal-400 transition resize-y shadow-lg"
-        // Use dangerouslySetInnerHTML only for initial state hydration on reset
         dangerouslySetInnerHTML={{ __html: htmlContent }} 
       />
       <button
         onClick={handleAnalyse}
-        className="bg-teal-500 hover:bg-teal-600 text-white font-bold py-3 px-8 rounded-full transition-transform transform hover:scale-105 text-lg shadow-md"
+        disabled={isBatchTranslating}
+        className="bg-teal-500 hover:bg-teal-600 text-white font-bold py-3 px-8 rounded-full transition-transform transform hover:scale-105 text-lg shadow-md flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        Analyse
+        {isBatchTranslating && <Spinner className="mr-3" />}
+        {isBatchTranslating ? 'Analyzing...' : 'Analyse'}
       </button>
     </div>
   );
